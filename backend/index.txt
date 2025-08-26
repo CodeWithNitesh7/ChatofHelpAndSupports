@@ -1,0 +1,260 @@
+const express = require('express');
+const app = express();
+const uploadRoutes = require("./src/routes/uploadRoutes");
+const path = require('path');
+
+
+const {Server} = require('socket.io');
+
+const http = require('http');
+
+const server = http.createServer(app);
+const cors = require('cors');
+const { timeStamp } = require('console');
+const { title } = require('process');
+app.use(cors());
+app.use(express.json())
+
+// Serve uploaded files statically
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// Add uploads route
+app.use("/api/uploads", uploadRoutes);
+
+const io = new Server(server, {
+    cors : {
+        origin: '*',
+        methods: ['GET','POST'],
+    },
+})
+
+
+// creating a connection
+
+const agents = [];
+
+const  customers = {};
+
+io.on('connection', (socket) =>{
+    console.log("User connected",socket.id);
+    
+
+    socket.on('set-role',({role,username})=>{
+        socket.username = username;
+        socket.role = role;
+        if (role === "agent") {
+            agents.push({socketId: socket.id, username, status: "free"})
+            console.log(`Agent joined :${username}`);
+        }else{
+            console.log(`Customer joined : ${username}`);
+        }
+    });
+socket.on("sendFile", (fileInfo) => {
+  console.log("Broadcasting file:", fileInfo);
+  io.to(room).emit("receiveFile", fileInfo);
+});
+
+    socket.on('customer-message' , (msg) =>{
+        
+    // If customer already has an assigned agent, send directly
+    if (customers[socket.id]) {
+        const agentId = customers[socket.id];
+        io.to(agentId).emit('chat-message', {
+            sender: socket.username,
+            text: msg,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+
+        socket.emit('chat-message', {
+            sender: socket.username,
+            text: msg,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+        return; // Don't search for new agent
+    }
+
+    //  If no agent assigned yet, find a free one
+    let agent = agents.find((a) => a.status === "free");
+
+    if (agent) {
+        customers[socket.id] = agent.socketId;
+        agent.status = "busy";
+
+        // send msg to agent
+        io.to(agent.socketId).emit('chat-message', {
+            sender: socket.username,
+            text: msg,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+
+        // also send back to the customer
+        socket.emit('chat-message', {
+            sender: socket.username,
+            text: msg,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+
+        setTimeout(() => {
+            socket.emit('chat-message',{
+                sender: "System",
+                text: `Agent is connected ${agent.username}`,
+                time: new Date().toLocaleTimeString([],{hour:'2-digit', minute: "2-digit"})
+            })
+        }, 2000); 
+
+        }else{
+            socket.emit('chat-message',{
+                sender: "System",
+                text: "Agent are connecting , pls wait",
+                time: new Date().toLocaleTimeString([],{hour: '2-digit', minute: '2-digit'})
+            })
+        }  
+        
+    })
+
+    socket.on("sendMessage", (data) => {
+    console.log("File received:", data.file);
+
+    // If customer has an assigned agent
+    if (customers[socket.id]) {
+        const agentId = customers[socket.id];
+        io.to(agentId).emit("chat-message", {
+            sender: socket.username,
+            file: data.file, // send file link/path
+            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        });
+
+        socket.emit("chat-message", {
+            sender: socket.username,
+            file: data.file,
+            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        });
+    } else {
+        // If agent sends a file to customer
+        let customerId = Object.keys(customers).find(
+            (custId) => customers[custId] === socket.id
+        );
+        if (customerId) {
+            io.to(customerId).emit("chat-message", {
+                sender: socket.username,
+                file: data.file,
+                time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+            });
+
+            socket.emit("chat-message", {
+                sender: socket.username,
+                file: data.file,
+                time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+            });
+        }
+    }
+});
+
+    socket.on('agent-message', (msg) =>{
+        let customerId = Object.keys(customers).find((custId) => customers[custId] === socket.id);
+
+        if (customerId) {
+            //send msg to the customer
+
+            io.to(customerId).emit('chat-message',{
+                sender : socket.username,
+                text: msg,
+                time: new Date().toLocaleTimeString([],{hour: "2-digit", minute: '2-digit'})
+            });
+
+            socket.emit('chat-message',{
+                sender: socket.username,
+                text: msg,
+                time: new Date().toLocaleTimeString([],{hour:'2-digit', minute: "2-digit"})
+            })
+        }
+    });
+
+socket.on("end-message", () => {
+  // if customer ends chat
+  if (customers[socket.id]) {
+    const agentId = customers[socket.id];
+    const agent = agents.find((a) => a.socketId === agentId);
+    if (agent) {
+      agent.status = "free";
+
+      // 🔹 notify agent that customer disconnected
+      io.to(agentId).emit("chat-message", {
+        sender: "System",
+        text: "Your customer has ended the chat. Please wait for a new customer.",
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      });
+    }
+    delete customers[socket.id];
+  }
+
+  // if agent ends chat
+  else {
+    const customerId = Object.keys(customers).find(
+      (custId) => customers[custId] === socket.id
+    );
+    if (customerId) {
+      // 🔹 notify customer that agent disconnected
+      io.to(customerId).emit("chat-message", {
+        sender: "System",
+        text: "Your agent has ended the chat. Please wait for a new agent.",
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      });
+      delete customers[customerId];
+    }
+    const agent = agents.find((a) => a.socketId === socket.id);
+    if (agent) agent.status = "free";
+  }
+});
+
+socket.on("disconnect", () => {
+  console.log(`User disconnected: ${socket.username || socket.id}`);
+
+  // if an agent disconnected
+  let agentIndex = agents.findIndex((a) => a.socketId === socket.id);
+  if (agentIndex !== -1) {
+    const agent = agents[agentIndex];
+    agents.splice(agentIndex, 1);
+
+    // find customer connected to this agent
+    const customerId = Object.keys(customers).find(
+      (custId) => customers[custId] === socket.id
+    );
+    if (customerId) {
+      io.to(customerId).emit("chat-message", {
+        sender: "System",
+        text: "Your agent has disconnected. Please wait for a new agent.",
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      });
+      delete customers[customerId];
+    }
+  }
+
+  // if a customer disconnected
+  else if (customers[socket.id]) {
+    const agentId = customers[socket.id];
+    const agent = agents.find((a) => a.socketId === agentId);
+    if (agent) {
+      agent.status = "free";
+
+      // 🔹 notify agent that customer disconnected
+      io.to(agentId).emit("chat-message", {
+        sender: "System",
+        text: "Your customer has disconnected. Please wait for a new customer.",
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      });
+    }
+    delete customers[socket.id];
+  }
+});
+
+
+
+    
+});
+
+server.listen(9000, ()=>{
+    console.log("Server is running on port 9000");
+});
+
+

@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+
+/* Smooth transitions for interactive elements */
+img, video {
+  transition: transform 0.2s ease;
+}
+
+img:hover, video:hover {
+  transform: scale(1.02);
+}
+
+/* Custom scrollbar for chat */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #2a3942;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #8696a0;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a6b3bb;
+}
+
+
+/* Smooth modal animations */
+.fixed {
+  transition: opacity 0.3s ease;
+}
+
+/* Modal backdrop blur effect */
+.bg-opacity-90 {
+  backdrop-filter: blur(4px);
+}
+
+/* Prevent body scroll when modal is open */
+body.modal-open {
+  overflow: hidden;
+}
