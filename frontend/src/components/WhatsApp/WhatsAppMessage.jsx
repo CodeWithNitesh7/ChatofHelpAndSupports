@@ -205,6 +205,7 @@
 import React, { useState, useEffect } from "react";
 
 // Normalize any possible message shape to avoid crashes
+// --- inside normalize ---
 function normalize(msg, me) {
   const sender = msg?.sender ?? msg?.username ?? "Unknown";
 
@@ -226,12 +227,24 @@ function normalize(msg, me) {
   mimeType = mimeType || msg?.mimeType || "";
   originalName = originalName || msg?.originalName || "";
 
-  const time = msg?.time ?? msg?.ts ?? "";
+  // ✅ support all possible keys
+  const rawTime = msg?.time ?? msg?.ts ?? msg?.timestamp ?? null;
+  let time = "";
+  if (rawTime) {
+    try {
+      const d = new Date(rawTime);
+      time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    } catch {
+      time = rawTime;
+    }
+  }
+
   const isMe = sender === me || sender === "Me";
   const isSystem = sender === "System";
 
   return { sender, text, time, fileUrl, originalName, mimeType, isMe, isSystem };
 }
+
 
 // Detect file type
 function getFileType(mimeType, filename) {

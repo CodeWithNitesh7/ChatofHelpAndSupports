@@ -182,14 +182,14 @@ import { FiSend, FiPaperclip } from "react-icons/fi";
 import axios from "axios";
 import { useSocket } from "../../context/SocketContext"; // ✅ use context
 
-export default function WhatsAppComposer({ username }) {
+export default function WhatsAppComposer({ username, role = "customer" }) {
   const [text, setText] = useState("");
   const { sendMessage, startTyping, stopTyping } = useSocket();
 
   // Debounced stopTyping (fires when user pauses typing)
   useEffect(() => {
     if (!text) {
-      stopTyping();
+      stopTyping(username);
       return;
     }
 
@@ -197,17 +197,20 @@ export default function WhatsAppComposer({ username }) {
 
     const timeout = setTimeout(() => stopTyping(username), 1500);
     return () => clearTimeout(timeout);
-  }, [text]);
+  }, [text, username, startTyping, stopTyping]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!text.trim()) return;
 
-    sendMessage({
-      text,
-      sender: username,
-      timestamp: Date.now(),
-    });
+    sendMessage(
+      {
+        text,
+        sender: username,
+        timestamp: Date.now(),
+      },
+      role // ✅ decide whether "customer-message" or "agent-message"
+    );
 
     setText("");
     stopTyping(username);
@@ -226,14 +229,17 @@ export default function WhatsAppComposer({ username }) {
       });
 
       // Send file as a chat message
-      sendMessage({
-        fileUrl: res.data.fileUrl,
-        originalName: res.data.originalName,
-        mimeType: res.data.mimeType,
-        size: res.data.size,
-        sender: username,
-        timestamp: Date.now(),
-      });
+      sendMessage(
+        {
+          fileUrl: res.data.fileUrl,
+          originalName: res.data.originalName,
+          mimeType: res.data.mimeType,
+          size: res.data.size,
+          sender: username,
+          timestamp: Date.now(),
+        },
+        role
+      );
     } catch (err) {
       console.error("File upload error:", err);
     } finally {

@@ -3,11 +3,10 @@ const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const path = require("path");
-const connectDB = require("./src/config/db");
-connectDB();
+
 
 const uploadRoutes = require("./src/routes/uploadRoutes");
-const registerSocketHandlers = require("./src/sockets");
+const registerSocketHandlers = require("./socketHandler");
 
 const app = express();
 const server = http.createServer(app);

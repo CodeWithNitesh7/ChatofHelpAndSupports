@@ -63,9 +63,10 @@ export function SocketProvider({ children }) {
     });
 
     // --- MESSAGING EVENTS ---
-    newSocket.on("message:new", (msg) => {
+    newSocket.on("new-message", (msg) => {
       setMessages((prev) => [...prev, msg]);
     });
+    
 
     // --- TYPING EVENTS ---
     newSocket.on("typing:start", (userId) => {
@@ -84,9 +85,13 @@ export function SocketProvider({ children }) {
 
   // --- HELPERS (emitters) ---
   const sendMessage = useCallback(
-    (msg) => {
+    (msg, role = "customer") => {
       if (!socket) return;
-      socket.emit("message:send", msg);
+      if (role === "agent") {
+        socket.emit("agent-message", msg);
+      } else {
+        socket.emit("customer-message", msg);
+      }
     },
     [socket]
   );

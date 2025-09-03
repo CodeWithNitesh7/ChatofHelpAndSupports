@@ -87,36 +87,41 @@
 
 
 
-
 import React, { useRef, useEffect } from "react";
 import WhatsAppMessage from "./WhatsAppMessage";
 import WhatsAppComposer from "./WhatsAppComposer";
 import WhatsAppAgentChat from "./WhatsappAgentChat";
-import { useSocket } from "../../context/SocketContext"; // <-- hook into context
 
-export default function WhatsAppChatWindow({ username, role, currentCustomer, onRequestTransfer }) {
+export default function WhatsAppChatWindow({
+  username,
+  role,
+  currentCustomer,
+  onRequestTransfer,
+  chat = {},           // default to empty object
+  activeChatId,        // tells which chat to display
+}) {
   const scrollRef = useRef(null);
 
-  // Pull everything from socket context
-  const { messages, sendMessage } = useSocket();
+  // Extract messages for the active chat safely
+  const messages = Array.isArray(chat[activeChatId]) ? chat[activeChatId] : [];
 
+  // Auto-scroll to the latest message
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // If user is an agent, render agent view
+  // Agent view
   if (role === "agent") {
     return (
       <WhatsAppAgentChat
         currentCustomer={currentCustomer}
-        onTransferComplete={() => {
-          console.log("Transfer completed");
-        }}
+        onTransferComplete={() => console.log("Transfer completed")}
+        chat={messages}  // pass only active chat messages
       />
     );
   }
 
-  // Customer chat window
+  // Customer view
   return (
     <section className="flex-1 bg-[#0b141a] flex flex-col">
       {/* Chat header */}
@@ -129,10 +134,8 @@ export default function WhatsAppChatWindow({ username, role, currentCustomer, on
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
-        {Array.isArray(messages) && messages.length > 0 ? (
-          messages.map((m, i) => (
-            <WhatsAppMessage key={i} msg={m} me={username} />
-          ))
+        {messages.length > 0 ? (
+          messages.map((m, i) => <WhatsAppMessage key={i} msg={m} me={username} />)
         ) : (
           <div className="h-full flex items-center justify-center">
             <div className="text-[#8696a0] text-sm">
@@ -144,15 +147,10 @@ export default function WhatsAppChatWindow({ username, role, currentCustomer, on
       </div>
 
       {/* Composer */}
-      <WhatsAppComposer
-        onSend={(text) =>
-          sendMessage({
-            text,
-            sender: username,
-            timestamp: Date.now(),
-          })
-        }
-      />
+      <WhatsAppComposer username={username} />
     </section>
   );
 }
+
+
+

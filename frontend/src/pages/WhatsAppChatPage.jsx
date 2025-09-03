@@ -177,7 +177,6 @@
 
 
 
-
 import React, { useEffect, useState } from "react";
 import { useSocket } from "../context/SocketContext";
 import WhatsAppJoinForm from "../components/WhatsApp/WhatsAppJoinForm";
@@ -185,11 +184,15 @@ import WhatsAppSidebar from "../components/WhatsApp/WhatsAppSidebar";
 import WhatsAppChatWindow from "../components/WhatsApp/WhatsAppChatWindow";
 
 export default function WhatsAppChatPage() {
-  const { socket, isConnected } = useSocket(); // ✅ get actual socket
+  const { socket } = useSocket(); 
   const [step, setStep] = useState("join"); // "join" | "chat"
   const [role, setRole] = useState("customer");
   const [username, setUsername] = useState("");
-  const [chat, setChat] = useState([]); // messages [{sender,text,time}]
+
+  // Instead of one flat chat array, track multiple
+  const [chat, setChat] = useState({})
+  const [activeChatId, setActiveChatId] = useState(null);
+
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [freeAgents, setFreeAgents] = useState([]);
   const [currentCustomer, setCurrentCustomer] = useState(null);
@@ -205,10 +208,12 @@ export default function WhatsAppChatPage() {
 
   // --- Send message ---
   const handleSend = (text) => {
-    if (!socket || !socket.emit) return;
+    if (!socket || !socket.emit || !activeChatId) return;
 
-    if (role === "customer") socket.emit("customer-message", text);
-    else socket.emit("agent-message", text);
+    const payload = { chatId: activeChatId, text };
+
+    if (role === "customer") socket.emit("customer-message", payload);
+    else socket.emit("agent-message", payload);
   };
 
   // --- Request free agents ---
@@ -221,7 +226,7 @@ export default function WhatsAppChatPage() {
     if (!currentCustomer || !socket || !socket.emit) return;
 
     socket.emit("transfer-customer", {
-      customerId: currentCustomer,
+      customerId: currentCustomer.id,
       toAgentId,
     });
     setShowTransferModal(false);
@@ -231,11 +236,16 @@ export default function WhatsAppChatPage() {
   useEffect(() => {
     if (!socket || !socket.on) return;
 
-    const onMsg = (data) => {
-      setChat((prev) => [...prev, data]);
+    const onMsg = (msg) => {
+      const { chatId } = msg;
+      setChat((prev) => {
+        const prevMsgs = prev[chatId] || [];
+        return { ...prev, [chatId]: [...prevMsgs, msg] };
+      });
     };
 
     socket.on("chat-message", onMsg);
+
     return () => {
       socket.off("chat-message", onMsg);
     };
@@ -254,7 +264,10 @@ export default function WhatsAppChatPage() {
     };
 
     const onCustomerConnected = (customerData) => {
-      setCurrentCustomer(customerData);
+      setCurrentCustomer({
+        id: customerData.customerId,
+        username: customerData.username
+      });
     };
 
     const onCustomerDisconnected = () => {
@@ -273,6 +286,15 @@ export default function WhatsAppChatPage() {
       socket.off("customer-disconnected", onCustomerDisconnected);
     };
   }, [socket, role]);
+
+  
+
+  // --- Handle chat selection from sidebar ---
+  const handleSelectChat = (chat) => {
+    setActiveChatId(chat.id);
+    // Load messages from history if available
+    socket.emit("load-chat", { chatId: chat.id });
+  };
 
   if (step === "join") {
     return (
@@ -294,6 +316,8 @@ export default function WhatsAppChatPage() {
           role={role}
           socket={socket}
           onLeave={() => window.location.reload()}
+          onSelectChat={handleSelectChat}   // ✅ NEW
+          activeChatId={activeChatId}       // ✅ highlight active
         />
 
         {/* Main chat area */}
@@ -311,7 +335,13 @@ export default function WhatsAppChatPage() {
             </button>
           )}
 
-          <WhatsAppChatWindow username={username} chat={chat} onSend={handleSend} />
+<WhatsAppChatWindow
+  username={username}
+  role={role}
+  currentCustomer={currentCustomer}
+  onSend={handleSend}
+  chat={chat}  // ✅ pass chat here
+/>
         </div>
       </div>
 
