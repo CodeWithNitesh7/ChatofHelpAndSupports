@@ -1,38 +1,3 @@
-// import React, { createContext, useContext, useEffect, useState } from "react";
-// import { io } from "socket.io-client";
-
-// const SocketContext = createContext();
-
-// export function SocketProvider({ children }) {
-//   const [socket, setSocket] = useState(null);
-
-//   useEffect(() => {
-//     const newSocket = io("http://localhost:9000/"); // change to live backend when deployed
-//     setSocket(newSocket);
-
-//     return () => newSocket.close();
-//   }, []);
-
-//   return (
-//     <SocketContext.Provider value={socket}>{children}</SocketContext.Provider>
-//   );
-// }
-
-// export const useSocket = () => useContext(SocketContext);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { io } from "socket.io-client";
 
@@ -43,6 +8,7 @@ export function SocketProvider({ children }) {
   const [isConnected, setIsConnected] = useState(false);
   const [messages, setMessages] = useState([]);
   const [typingUsers, setTypingUsers] = useState([]);
+  const [assignedAgent, setAssignedAgent] = useState(null);
 
   useEffect(() => {
     const newSocket = io("http://localhost:9000", {
@@ -63,10 +29,9 @@ export function SocketProvider({ children }) {
     });
 
     // --- MESSAGING EVENTS ---
-    newSocket.on("new-message", (msg) => {
+    newSocket.on("chat-message", (msg) => {
       setMessages((prev) => [...prev, msg]);
     });
-    
 
     // --- TYPING EVENTS ---
     newSocket.on("typing:start", (userId) => {
@@ -77,8 +42,23 @@ export function SocketProvider({ children }) {
       setTypingUsers((prev) => prev.filter((id) => id !== userId));
     });
 
+    // --- ASSIGNMENT EVENTS ---
+    newSocket.on("agent-connected", ({ agentId, username }) => {
+      console.log("📩 Connected to agent:", username, agentId);
+      setAssignedAgent({ agentId, username });
+    });
+
+    newSocket.on("customer-connected", ({ customerId, username }) => {
+      console.log("👤 Customer connected:", username, customerId);
+    });
+
     // cleanup
     return () => {
+      newSocket.off("chat-message");
+      newSocket.off("typing:start");
+      newSocket.off("typing:stop");
+      newSocket.off("agent-connected");
+      newSocket.off("customer-connected");
       newSocket.disconnect();
     };
   }, []);
@@ -119,6 +99,7 @@ export function SocketProvider({ children }) {
         isConnected,
         messages,
         typingUsers,
+        assignedAgent,
         sendMessage,
         startTyping,
         stopTyping,
