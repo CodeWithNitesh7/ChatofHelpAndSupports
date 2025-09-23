@@ -208,6 +208,7 @@ export default function WhatsAppComposer({ username, role = "customer" }) {
         text,
         sender: username,
         timestamp: Date.now(),
+        role,
       },
       role // ✅ decide whether "customer-message" or "agent-message"
     );
@@ -237,6 +238,7 @@ export default function WhatsAppComposer({ username, role = "customer" }) {
           size: res.data.size,
           sender: username,
           timestamp: Date.now(),
+          role,
         },
         role
       );

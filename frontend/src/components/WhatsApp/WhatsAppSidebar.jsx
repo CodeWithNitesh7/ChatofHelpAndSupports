@@ -39,10 +39,18 @@ export default function WhatsAppSidebar({
       setIsChatConnected(true);
       setConnectedUser(data);
     });
-    socket.on("customer-disconnected", () => {
-      setIsChatConnected(false);
-      setConnectedUser(null);
-    });
+socket.on("customer-disconnected", ({ customerId }) => {
+  setIsChatConnected(false);
+
+  // Remove from header if it's the current connected user
+  if (connectedUser?.customerId === customerId) setConnectedUser(null);
+
+  // Remove from chats sidebar
+  setChats((prevChats) =>
+    prevChats.filter((chat) => !chat.participants.some(p => p.id === customerId))
+  );
+});
+
     socket.on("agent-disconnected", () => {
       setIsChatConnected(false);
       setConnectedUser(null);
@@ -62,6 +70,7 @@ export default function WhatsAppSidebar({
       socket.emit("request-connection-status");
     }
 
+  
     return () => {
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);

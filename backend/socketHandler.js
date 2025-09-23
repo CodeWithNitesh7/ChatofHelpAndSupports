@@ -112,7 +112,7 @@ socket.on("customer-message", (msg) => {
       sender: socket.id,
       senderUsername: socket.username,
       text: msg,
-      time: new Date(),
+      time: new Date().toISOString(),
       type: "text"
     });
   } else {
@@ -127,8 +127,9 @@ socket.on("customer-message", (msg) => {
         sender: socket.id,
         senderUsername: socket.username,
         text: msg,
-        time: new Date(),
-        type: "text"
+        time: new Date().toISOString(),
+        type: "text",
+        role:socket.role
       });
     } else {
       // No agent free yet
@@ -136,7 +137,7 @@ socket.on("customer-message", (msg) => {
       socket.emit("chat-message", {
         sender: "System",
         text: "All agents are busy. Please wait...",
-        time: now()
+        time: new Date().toISOString()
       });
     }
   }
@@ -204,7 +205,9 @@ socket.on("request-connection-status", () => {
 
       // Update chat with transfer information
       // Add system message for transfer
+      const customerSocket = io.sockets.sockets.get(customerId);
 addSystemMessage(
+
   socket.id,
   customerId,
   `Customer ${customerSocket.username} has been transferred from ${currentAgent.username} to ${targetAgent.username}`
@@ -227,19 +230,25 @@ if (chat) {
       targetAgent.status = "busy";
       targetAgent.currentCustomer = customerId;
 
+      // Notify old agent to remove customer from sidebar/header
+io.to(currentAgent.socketId).emit("customer-disconnected", {
+  customerId: customerId
+});
+
+
       io.to(customerId).emit("chat-message", {
         sender: "System",
         text: `You have been transferred to agent ${targetAgent.username}`,
-        time: now(),
+        time: new Date().toISOString(),
       });
 
       io.to(toAgentId).emit("chat-message", {
         sender: "System",
         text: `You received a transferred customer from ${currentAgent.username}`,
-        time: now(),
+        time: new Date().toISOString(),
       });
 
-      const customerSocket = io.sockets.sockets.get(customerId);
+      
       if (customerSocket) {
         io.to(toAgentId).emit("customer-connected", {
           customerId: customerId,
@@ -326,21 +335,21 @@ if (chat) {
       io.to(customerId).emit("chat-message", {
         sender: "System",
         text: `You have been transferred to agent ${targetAgent.username}`,
-        time: now(),
+        time: new Date().toISOString(),
       });
       
       if (currentHandler) {
         io.to(currentHandlerId).emit("chat-message", {
           sender: "System",
           text: `Customer ${customerSocket.username} was transferred to ${targetAgent.username}`,
-          time: now(),
+          time: new Date().toISOString(),
         });
       }
       
       io.to(toAgentId).emit("chat-message", {
         sender: "System",
         text: `You received customer ${customerSocket.username}`,
-        time: now(),
+        time: new Date().toISOString(),
       });
       
       io.to(toAgentId).emit("customer-connected", {
@@ -367,14 +376,14 @@ if (chat) {
           sender: socket.id,
           senderUsername: socket.username,
           text: msg,
-          time: new Date(),
+          time: new Date().toISOString(),
           type: "text"
         });
       } else {
         socket.emit("chat-message", {
           sender: "System",
           text: "You are not connected to any customer.",
-          time: now(),
+          time: new Date().toISOString(),
         });
       }
     });
@@ -392,7 +401,7 @@ if (chat) {
             originalName: data.originalName,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
-            time: new Date(),
+            time: new Date().toISOString(),
             type: "file"
           });
         }
@@ -409,7 +418,7 @@ if (chat) {
             originalName: data.originalName,
             mimeType: data.mimeType,
             fileSize: data.fileSize,
-            time: new Date(),
+            time: new Date().toISOString(),
             type: "file"
           });
         }
@@ -468,12 +477,12 @@ if (chat) {
         const chat = findChatByParticipants(agentId, socket.id);
         if (chat) {
           chat.status = "ended";
-          chat.endTime = new Date();
+          chat.endTime = new Date().toISOString()
           addMessageToChat(agentId, socket.id, {
             sender: "system",
             senderUsername: "System",
             text: "Customer ended the chat",
-            time: new Date(),
+            time: new Date().toISOString(),
             type: "system"
           });
         }
@@ -481,7 +490,7 @@ if (chat) {
         io.to(agentId).emit("chat-message", {
           sender: "System",
           text: "Customer ended the chat.",
-          time: now(),
+          time: new Date().toISOString(),
         });
         
         io.to(agentId).emit("customer-disconnected");
@@ -499,12 +508,12 @@ if (chat) {
           const chat = findChatByParticipants(socket.id, customerId);
           if (chat) {
             chat.status = "ended";
-            chat.endTime = new Date();
+            chat.endTime = new Date().toISOString();
             addMessageToChat(socket.id, customerId, {
               sender: "system",
               senderUsername: "System",
               text: "Agent ended the chat",
-              time: new Date(),
+              time: new Date().toISOString(),
               type: "system"
             });
           }
@@ -512,7 +521,7 @@ if (chat) {
           io.to(customerId).emit("chat-message", {
             sender: "System",
             text: "Agent ended the chat.",
-            time: now(),
+            time: new Date().toISOString(),
           });
           delete customers[customerId];
         }
@@ -547,12 +556,12 @@ if (chat) {
           const chat = findChatByParticipants(socket.id, customerId);
           if (chat) {
             chat.status = "ended";
-            chat.endTime = new Date();
+            chat.endTime = new Date().toISOString();
             addMessageToChat(socket.id, customerId, {
               sender: "system",
               senderUsername: "System",
               text: "Agent disconnected",
-              time: new Date(),
+              time: new Date().toISOString(),
               type: "system"
             });
           }
@@ -560,7 +569,7 @@ if (chat) {
           io.to(customerId).emit("chat-message", {
             sender: "System",
             text: "Agent disconnected. Please wait for another agent.",
-            time: now(),
+            time: new Date().toISOString(),
           });
           delete customers[customerId];
         }
@@ -581,12 +590,12 @@ if (chat) {
         const chat = findChatByParticipants(agentId, socket.id);
         if (chat) {
           chat.status = "ended";
-          chat.endTime = new Date();
+          chat.endTime = new Date().toISOString();
           addMessageToChat(agentId, socket.id, {
             sender: "system",
             senderUsername: "System",
             text: "Customer disconnected",
-            time: new Date(),
+            time: new Date().toISOString(),
             type: "system"
           });
         }
@@ -594,7 +603,7 @@ if (chat) {
         io.to(agentId).emit("chat-message", {
           sender: "System",
           text: "Customer disconnected.",
-          time: now(),
+          time: new Date().toISOString(),
         });
       
         io.to(agentId).emit("customer-disconnected");
@@ -618,8 +627,9 @@ if (chat) {
     const payload = { 
       sender: socket.username, 
       text, 
-      time: now(),
-      type: "text"
+      time: new Date().toISOString(),
+      type: "text",
+      role:socket.role
     };
     io.to(targetId).emit("chat-message", payload);
     socket.emit("chat-message", payload);
@@ -632,8 +642,9 @@ if (chat) {
       originalName: fileData.originalName,
       mimeType: fileData.mimeType,
       fileSize: fileData.fileSize,
-      time: now(),
-      type: "file"
+      time: new Date().toISOString(),
+      type: "file",
+      role:socket.role
     };
     io.to(targetId).emit("chat-message", payload);
     socket.emit("chat-message", payload);
@@ -674,7 +685,7 @@ if (chat) {
       sender: "system",
       senderUsername: "System",
       text: `Agent ${agent.username} is now connected to you.`,
-      time: new Date(),
+      time: new Date().toISOString(),
       type: "system"
     });
   
@@ -722,7 +733,7 @@ if (chat) {
         }
       ],
       messages: [],
-      startTime: new Date(),
+      startTime: new Date().toISOString(),
       status: "active"
     };
     
@@ -754,7 +765,7 @@ if (chat) {
       sender: "system",
       senderUsername: "System",
       text,
-      time: new Date(),
+      time: new Date().toISOString(),
       type: "system"
     };
   

@@ -135,7 +135,7 @@ export default function WhatsAppChatWindow({
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {messages.length > 0 ? (
-          messages.map((m, i) => <WhatsAppMessage key={i} msg={m} me={username} />)
+          messages.map((m, i) => <WhatsAppMessage key={i} msg={m} me={m.role === "customer"} />)
         ) : (
           <div className="h-full flex items-center justify-center">
             <div className="text-[#8696a0] text-sm">
