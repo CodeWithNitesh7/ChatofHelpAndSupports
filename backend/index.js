@@ -4,7 +4,7 @@ const { Server } = require("socket.io");
 const cors = require("cors");
 const path = require("path");
 
-
+const connectDB = require("./src/config/db"); 
 const uploadRoutes = require("./src/routes/uploadRoutes");
 const registerSocketHandlers = require("./socketHandler");
 
@@ -18,10 +18,16 @@ app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 app.use("/api/uploads", uploadRoutes);
 
-// Setup socket.io
-const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-});
-registerSocketHandlers(io);
+// --- Connect to MongoDB ---
+connectDB().then(() => {
+  // Setup socket.io
+  const io = new Server(server, {
+    cors: { origin: "*", methods: ["GET", "POST"] },
+  });
 
-server.listen(9000, () => console.log("🚀 Server running on port 9000"));
+  // Register socket handlers
+  registerSocketHandlers(io);
+
+  // Start server
+  server.listen(9000, () => console.log("🚀 Server running on port 9000"));
+});

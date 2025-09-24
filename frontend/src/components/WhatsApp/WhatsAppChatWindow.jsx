@@ -86,7 +86,6 @@
 
 
 
-
 import React, { useRef, useEffect } from "react";
 import WhatsAppMessage from "./WhatsAppMessage";
 import WhatsAppComposer from "./WhatsAppComposer";
@@ -123,7 +122,7 @@ export default function WhatsAppChatWindow({
 
   // Customer view
   return (
-    <section className="flex-1 bg-[#0b141a] flex flex-col">
+    <section className="flex flex-col h-full bg-[#0b141a]">
       {/* Chat header */}
       <div className="h-14 px-4 border-b border-[#233138] bg-[#202c33] flex items-center">
         <div>
@@ -133,9 +132,20 @@ export default function WhatsAppChatWindow({
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
+      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2">
         {messages.length > 0 ? (
-          messages.map((m, i) => <WhatsAppMessage key={i} msg={m} me={m.role === "customer"} />)
+          messages.map((m, i) =>
+            m.role === "system" ? (
+              <div
+                key={i}
+                className="text-center text-sm italic text-[#8696a0] my-2"
+              >
+                {m.text}
+              </div>
+            ) : (
+              <WhatsAppMessage key={i} msg={m} me={m.role === "customer"} />
+            )
+          )
         ) : (
           <div className="h-full flex items-center justify-center">
             <div className="text-[#8696a0] text-sm">
@@ -147,7 +157,9 @@ export default function WhatsAppChatWindow({
       </div>
 
       {/* Composer */}
-      <WhatsAppComposer username={username} />
+      <div className="border-t border-[#233138]">
+        <WhatsAppComposer username={username} />
+      </div>
     </section>
   );
 }
