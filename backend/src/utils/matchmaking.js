@@ -1,28 +1,31 @@
-const User = require("../models/User"); // adjust path if needed
+const User = require("../models/User");
 
-// Assign a free agent from DB
 async function assignAgent(customerId) {
   try {
-    // Find one free agent and mark them busy
     const freeAgent = await User.findOneAndUpdate(
-      { role: "agent", isAvailable: true },
-      { isAvailable: false, currentCustomer: customerId },
+      { role: "agent", status: "free" },
+      { 
+        status: "busy", 
+        currentCustomer: customerId 
+      },
       { new: true }
     ).lean();
 
-    return freeAgent; // null if none found
+    return freeAgent;
   } catch (err) {
     console.error("❌ Error in assignAgent:", err);
     return null;
   }
 }
 
-// Release an agent in DB
 async function releaseAgent(agentSocketId) {
   try {
     const agent = await User.findOneAndUpdate(
       { socketId: agentSocketId, role: "agent" },
-      { isAvailable: true, currentCustomer: null },
+      { 
+        status: "free", 
+        currentCustomer: null 
+      },
       { new: true }
     ).lean();
 
@@ -33,10 +36,12 @@ async function releaseAgent(agentSocketId) {
   }
 }
 
-// Get all free agents
 async function getFreeAgents() {
   try {
-    const freeAgents = await User.find({ role: "agent", isAvailable: true }).lean();
+    const freeAgents = await User.find({ 
+      role: "agent", 
+      status: "free" 
+    }).lean();
     return freeAgents;
   } catch (err) {
     console.error("❌ Error in getFreeAgents:", err);
@@ -44,10 +49,12 @@ async function getFreeAgents() {
   }
 }
 
-// Get agent by socketId
 async function getAgentById(agentSocketId) {
   try {
-    const agent = await User.findOne({ socketId: agentSocketId, role: "agent" }).lean();
+    const agent = await User.findOne({ 
+      socketId: agentSocketId, 
+      role: "agent" 
+    }).lean();
     return agent;
   } catch (err) {
     console.error("❌ Error in getAgentById:", err);
