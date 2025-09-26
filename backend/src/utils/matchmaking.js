@@ -6,7 +6,7 @@ async function assignAgent(customerId) {
       { role: "agent", status: "free" },
       { 
         status: "busy", 
-        currentCustomer: customerId 
+        currentCustomer: mongoose.Types.ObjectId(customerId) 
       },
       { new: true }
     ).lean();

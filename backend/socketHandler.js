@@ -23,67 +23,84 @@ module.exports = function registerSocketHandlers(io) {
     
 
     // --- ROLE SETUP ---
+// --- ROLE SETUP ---
 socket.on("set-role", async ({ role, username }) => {
-  socket.role = role;
-  socket.username = username;
+  try {
+    socket.role = role;
+    socket.username = username;
 
-  if (role === "agent") {
-    // Upsert agent in DB
-    await User.findOneAndUpdate(
-      { socketId: socket.id, role: "agent" },
-      { 
-        username, 
-        status: "free", 
-        currentCustomer: null 
-      },
-      { upsert: true, new: true }
-    );
+    if (role === "agent") {
+      // Check if agent already exists
+      let agent = await User.findOne({ username, role: "agent" });
 
-    // Assign any waiting customers
-    const waitingCustomers = await User.find({ 
-      role: "customer", 
-      currentCustomer: null 
-    }).lean();
+      if (agent) {
+        // Update socketId to current connection, keep the same _id
+        agent.socketId = socket.id;
+        agent.status = "free"; // now free until assigned a customer
+        agent.currentCustomer = null;
+        await agent.save();
+      } else {
+        // New agent
+        agent = await User.create({
+          username,
+          role: "agent",
+          socketId: socket.id,
+          status: "free",
+          currentCustomer: null
+        });
+      }
 
-    for (const customer of waitingCustomers) {
-      const agent = await assignAgent(customer.socketId);
-      if (!agent) break;
+      // Assign any waiting customers
+      const waitingCustomers = await User.find({
+        role: "customer",
+        currentCustomer: null
+      }).lean();
 
-      const customerSocket = io.sockets.sockets.get(customer.socketId);
-      if (customerSocket) {
-        await connectCustomerToAgent(customerSocket, agent);
+      for (const customer of waitingCustomers) {
+        const assignedAgent = await assignAgent(customer.socketId);
+        if (!assignedAgent) break;
+
+        const customerSocket = io.sockets.sockets.get(customer.socketId);
+        if (customerSocket) {
+          await connectCustomerToAgent(customerSocket, assignedAgent);
+        }
+      }
+    } 
+    else if (role === "customer") {
+      // Create customer in DB temporarily
+      await User.findOneAndUpdate(
+        { socketId: socket.id, role: "customer" },
+        { 
+          username, 
+          currentCustomer: null 
+        },
+        { upsert: true, new: true }
+      );
+
+      console.log(`👤 Customer joined: ${username} (${socket.id})`);
+
+      // Assign a free agent
+      const agent = await assignAgent(socket.id);
+      if (agent) {
+        await connectCustomerToAgent(socket, agent);
+      } else {
+        console.log(`⚠️ No free agent for customer ${username}, waiting in DB`);
       }
     }
-  } else if (role === "customer") {
-    // Upsert customer in DB
-    await User.findOneAndUpdate(
-      { socketId: socket.id, role: "customer" },
-      { 
-        username, 
-        currentCustomer: null 
-      },
-      { upsert: true, new: true }
-    );
 
-    console.log(`👤 Customer joined: ${username} (${socket.id})`);
+    // Emit agent list for everyone
+    await emitAgentList(io);
 
-    // Try to assign a free agent from DB
-    const agent = await assignAgent(socket.id);
-    if (agent) {
-      await connectCustomerToAgent(socket, agent);
-    } else {
-      console.log(`⚠️ No free agent for customer ${username}, waiting in DB`);
-    }
+    // Send agent list & empty chat history for this socket
+    socket.emit("agent-list-update", { agents: await getAgentList() });
+    socket.emit("chat-history", { chats: [] }); // fresh chat, no old messages
+
+  } catch (err) {
+    console.error("❌ Error in set-role:", err);
+    socket.emit("role-error", { message: "Could not set role" });
   }
-
-  // Update agent list for everyone
-  await emitAgentList(io);
-
-  // Send agent list & chat history to this socket
-  socket.emit("agent-list-update", { agents: await getAgentList() });
-  const chats = await getChatHistoryForUser(socket.id, socket.role);
-  socket.emit("chat-history", { chats });
 });
+
 
 
     
