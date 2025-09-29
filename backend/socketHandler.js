@@ -1,9 +1,4 @@
-const User = require("./src/models/User");
-const Chat = require("./src/models/Chat");
-
-
 const matchmakingUtils = require("./src/utils/matchmaking");
-
 
 const {
   assignAgent,
@@ -12,10 +7,12 @@ const {
   getAgentById
 } = matchmakingUtils;
 
+
+
+let chats = [];
+const agents = [];
 const customers = {};
-
-
-
+const waitingCustomers = [];
 
 module.exports = function registerSocketHandlers(io) {
   io.on("connection", (socket) => {
@@ -23,1302 +20,801 @@ module.exports = function registerSocketHandlers(io) {
     
 
     // --- ROLE SETUP ---
-// --- ROLE SETUP ---
-socket.on("set-role", async ({ role, username }) => {
-  try {
-    socket.role = role;
-    socket.username = username;
+    socket.on("set-role", ({ role, username }) => {
+      socket.role = role;
+      socket.username = username;
+    
+      if (role === "agent") {
+        // Remove any existing agent with the same socket.id before adding
+  const existingIndex = agents.findIndex(a => a.socketId === socket.id);
+  if (existingIndex !== -1) {
+    agents.splice(existingIndex, 1);
+  }
 
-    if (role === "agent") {
-      // Check if agent already exists
-      let agent = await User.findOne({ username, role: "agent" });
-
-      if (agent) {
-        // Update socketId to current connection, keep the same _id
-        agent.socketId = socket.id;
-        agent.status = "free"; // now free until assigned a customer
-        agent.currentCustomer = null;
-        await agent.save();
-      } else {
-        // New agent
-        agent = await User.create({
-          username,
-          role: "agent",
-          socketId: socket.id,
-          status: "free",
-          currentCustomer: null
-        });
-      }
-
-      // Assign any waiting customers
-      const waitingCustomers = await User.find({
-        role: "customer",
-        currentCustomer: null
-      }).lean();
-
-      for (const customer of waitingCustomers) {
-        const assignedAgent = await assignAgent(customer.socketId);
-        if (!assignedAgent) break;
-
-        const customerSocket = io.sockets.sockets.get(customer.socketId);
-        if (customerSocket) {
-          await connectCustomerToAgent(customerSocket, assignedAgent);
+  agents.push({
+    id: socket.id,
+    username,
+    status: "free",
+    socketId: socket.id,
+  });
+        console.log(`✅ Agent registered: ${username} (${socket.id})`);
+    
+        // Check waiting customers
+        while (waitingCustomers.length > 0) {
+          const customerId = waitingCustomers.shift();
+          const customerSocket = io.sockets.sockets.get(customerId);
+          if (customerSocket) {
+            connectCustomerToAgent(customerSocket, agents[agents.length - 1]); // last agent added
+            break; // assign only one customer per agent for now
+          }
+        }
+    
+      } else if (role === "customer") {
+        customers[socket.id] = null;
+        console.log(`👤 Customer joined: ${username} (${socket.id})`);
+    
+        const agent = assignAgent(agents);
+        if (agent) {
+          connectCustomerToAgent(socket, agent);
+        } else {
+          waitingCustomers.push(socket.id);
+          console.log(`⚠️ No free agent, customer added to waiting list: ${username}`);
         }
       }
-    } 
-    else if (role === "customer") {
-      // Create customer in DB temporarily
-      await User.findOneAndUpdate(
-        { socketId: socket.id, role: "customer" },
-        { 
-          username, 
-          currentCustomer: null 
-        },
-        { upsert: true, new: true }
-      );
-
-      console.log(`👤 Customer joined: ${username} (${socket.id})`);
-
-      // Assign a free agent
-      const agent = await assignAgent(socket.id);
-      if (agent) {
-        await connectCustomerToAgent(socket, agent);
-      } else {
-        console.log(`⚠️ No free agent for customer ${username}, waiting in DB`);
-      }
-    }
-
-    // Emit agent list for everyone
-    await emitAgentList(io);
-
-    // Send agent list & empty chat history for this socket
-    socket.emit("agent-list-update", { agents: await getAgentList() });
-    socket.emit("chat-history", { chats: [] }); // fresh chat, no old messages
-
-  } catch (err) {
-    console.error("❌ Error in set-role:", err);
-    socket.emit("role-error", { message: "Could not set role" });
-  }
-});
-
-
-
+    
+      // Update agent list for everyone
+      emitAgentList(io);
+    
+      // Send list & chat history to this socket
+      socket.emit("agent-list-update", { agents: getAgentList() });
+      socket.emit("chat-history", { chats: getChatHistoryForUser(socket.id, socket.role) });
+    });
     
     
     
 
-socket.on("request-agent-list", async () => {
-  try {
-    console.log(`📤 Sending agent list to ${socket.id}`);
-    const agents = await getAgentList(); // DB-based
-    socket.emit("agent-list-update", { agents });
-  } catch (err) {
-    console.error("❌ Error sending agent list:", err);
-    socket.emit("agent-list-update", { agents: [] });
-  }
-});
-
+    socket.on("request-agent-list", () => {
+      console.log(`📤 Sending agent list to ${socket.id}`);
+      socket.emit("agent-list-update", { agents: getAgentList() })
+    });
     
     // --- REQUEST CHAT HISTORY ---
-socket.on("request-chat-history", async () => {
-  console.log(`📤 Sending chat history to ${socket.id}`);
-
-  try {
-    let chats;
-
-    if (socket.role === "admin") {
-      // Admin gets all chats
-      chats = await Chat.find({})
-        .sort({ startTime: -1 })
-        .limit(50); // limit for performance
-    } else {
-      // Fetch chats where user is a participant
-      chats = await Chat.find({ "participants.id": socket.id })
-        .sort({ startTime: -1 })
-        .limit(50);
-    }
-
-    // Send last 10 messages of each chat to the client
-    const formattedChats = chats.map(chat => ({
-      ...chat.toObject(),
-      messages: chat.messages.slice(-10),
-    }));
-
-    socket.emit("chat-history", { chats: formattedChats });
-  } catch (err) {
-    console.error("❌ Error fetching chat history:", err);
-    socket.emit("chat-error", { message: "Failed to load chat history" });
-  }
-});
-
-
+    socket.on("request-chat-history", () => {
+      console.log(`📤 Sending chat history to ${socket.id}`);
+      socket.emit("chat-history", { chats: getChatHistoryForUser(socket.id, socket.role) });
+    });
     
     // --- LOAD SPECIFIC CHAT ---
-socket.on("load-chat", async ({ chatId }) => {
-  try {
-    // Find chat in MongoDB
-    const chat = await Chat.findById(chatId).lean();
-
-    if (!chat) {
-      return socket.emit("chat-error", { message: "Chat not found" });
-    }
-
-    // Check if user is authorized (participant or admin)
-    const isParticipant = socket.role === "admin" || 
-      chat.participants.some(p => p.id === socket.id);
-
-    if (!isParticipant) {
-      return socket.emit("chat-error", { message: "Not authorized to view this chat" });
-    }
-
-    // Send full chat object
-    socket.emit("chat-loaded", { chat });
-  } catch (err) {
-    console.error("❌ Error loading chat:", err);
-    socket.emit("chat-error", { message: "Failed to load chat" });
-  }
-});
-
-
+    socket.on("load-chat", ({ chatId }) => {
+      const chat = chats.find(c => c.id === chatId);
+      if (chat) {
+        // Check if user is authorized to view this chat
+        if (isUserInChat(socket.id, socket.role, chat)) {
+          socket.emit("chat-loaded", { chat });
+        } else {
+          socket.emit("chat-error", { message: "Not authorized to view this chat" });
+        }
+      } else {
+        socket.emit("chat-error", { message: "Chat not found" });
+      }
+    });
 
     // --- CUSTOMER MESSAGE ---
     // In your socket handler file, update the customer-message event:
 // In your socket handler file, update the customer-message event:
-socket.on("customer-message", async (msg) => {
-  try {
-    console.log("📨 Customer message received:", msg);
-    
-    // Extract text from message object if needed
-    const messageText = typeof msg === 'string' ? msg : msg.text || '';
+socket.on("customer-message", (msg) => {
+  const agentId = customers[socket.id];
 
-    // Try to find an assigned agent for this customer
-    let chat = await findOrCreateChatForCustomer(socket.id);
-    let agentId = chat.participants.find(p => p.role === "agent")?.id;
-
-    if (!agentId) {
-      // No agent yet, assign one
-      const agent = await assignAgent(socket.id);
-      if (agent) {
-        await connectCustomerToAgent(socket, agent);
-        agentId = agent.socketId;
-      } else {
-        // No free agent, notify customer
-        return socket.emit("chat-message", {
-          sender: "System",
-          text: "All agents are busy. Please wait...",
-          time: new Date().toISOString(),
-          type: "system"
-        });
-      }
-    }
-
-    // Send message to the agent using the corrected sendMessage function
-    await sendMessage(io, socket, agentId, messageText);
-
-  } catch (err) {
-    console.error("❌ Error handling customer-message:", err);
-    socket.emit("chat-message", {
-      sender: "System",
-      text: "Message could not be sent.",
+  if (agentId) {
+    // Agent already assigned
+    sendMessage(io, socket, agentId, msg);
+    addMessageToChat(socket.id, agentId, {
+      sender: socket.id,
+      senderUsername: socket.username,
+      text: msg,
       time: new Date().toISOString(),
-      type: "system"
+      type: "text"
     });
+  } else {
+    // Customer waiting: try to assign an available agent
+    const agent = assignAgent(agents);
+
+    if (agent) {
+      connectCustomerToAgent(socket, agent);
+      // Send the current message after connection
+      sendMessage(io, socket, agent.socketId, msg);
+      addMessageToChat(socket.id, agent.socketId, {
+        sender: socket.id,
+        senderUsername: socket.username,
+        text: msg,
+        time: new Date().toISOString(),
+        type: "text",
+        role:socket.role
+      });
+    } else {
+      // No agent free yet
+      waitingCustomers.push(socket.id);
+      socket.emit("chat-message", {
+        sender: "System",
+        text: "All agents are busy. Please wait...",
+        time: new Date().toISOString()
+      });
+    }
   }
 });
 
 
 
 // Add this to your socket handler file
-socket.on("request-connection-status", async () => {
-  try {
-    if (socket.role === "agent") {
-      // Find the customer currently connected to this agent
-      const customerId = Object.keys(customers).find(
-        (id) => customers[id] === socket.id
-      );
-
-      if (customerId) {
-        const customerSocket = io.sockets.sockets.get(customerId);
-        let username = customerSocket?.username;
-
-        // Fallback: fetch from DB if socket not found
-        if (!username) {
-          const user = await User.findById(customerId).lean();
-          username = user?.username || "Unknown Customer";
-        }
-
-        socket.emit("customer-connected", { customerId, username });
-      }
-    } else if (socket.role === "customer") {
-      const agentId = customers[socket.id];
-
-      if (agentId) {
-        const agentSocket = io.sockets.sockets.get(agentId);
-        let username = agentSocket?.username;
-
-        // Fallback: fetch from DB if agent socket not available
-        if (!username) {
-          const user = await User.findById(agentId).lean();
-          username = user?.username || "Unknown Agent";
-        }
-
-        socket.emit("agent-connected", { agentId, username });
-      }
-    }
-  } catch (err) {
-    console.error("Error in request-connection-status:", err);
-  }
-});
-
-
-
-    // --- AGENT TRANSFER REQUEST ---
-socket.on("transfer-customer", async ({ customerId, toAgentId }) => {
-  try {
-    if (socket.role !== "agent") return;
-
-    const currentAgent = await getAgentById(socket.id);
-    const targetAgent = await getAgentById(toAgentId);
-
-    // Validate agents
-    if (!currentAgent || !targetAgent || targetAgent.status !== "free") {
-      return socket.emit("transfer-failed", { message: "Transfer failed. Agent is not available." });
-    }
-
-    // Validate customer
-    if (!customers[customerId]) {
-      return socket.emit("transfer-failed", { message: "Customer not found or not connected to any agent." });
-    }
-
-    if (customers[customerId] !== socket.id) {
-      return socket.emit("transfer-failed", { message: "You are not handling this customer." });
-    }
-
-    const customerSocket = io.sockets.sockets.get(customerId);
-    const customerUsername = customerSocket?.username || (await User.findById(customerId).lean())?.username || "Customer";
-
-    // --- DB: find or create chat ---
-    let chat = await Chat.findOne({
-      participants: { $all: [socket.id, customerId] },
-      status: "active"
-    });
-
-    if (!chat) {
-      chat = await Chat.create({
-        participants: [
-          { id: socket.id, username: currentAgent.username, role: "agent" },
-          { id: customerId, username: customerUsername, role: "customer" }
-        ],
-        messages: [],
-        status: "active",
-        startTime: new Date()
-      });
-    }
-
-    // Add system message
-    const systemMessage = {
-      sender: "system",
-      senderUsername: "System",
-      text: `Customer ${customerUsername} has been transferred from ${currentAgent.username} to ${targetAgent.username}`,
-      time: new Date(),
-      type: "system"
-    };
-    chat.messages.push(systemMessage);
-
-    // Ensure target agent is in participants
-    if (!chat.participants.some(p => p.id === toAgentId)) {
-      chat.participants.push({ id: toAgentId, username: targetAgent.username, role: "agent" });
-    }
-
-    await chat.save();
-
-    // --- Update in-memory mappings ---
-    customers[customerId] = toAgentId;
-    await releaseAgent(currentAgent.socketId); // mark current agent free
-    targetAgent.status = "busy";
-    targetAgent.currentCustomer = customerId;
-
-    // --- Emit socket events ---
-    io.to(currentAgent.socketId).emit("customer-disconnected", { customerId });
-
-    io.to(customerId).emit("chat-message", systemMessage);
-
-    io.to(toAgentId).emit("chat-message", {
-      sender: "System",
-      text: `You received a transferred customer from ${currentAgent.username}`,
-      time: new Date().toISOString()
-    });
-
-    if (customerSocket) {
-      io.to(toAgentId).emit("customer-connected", { customerId, username: customerUsername });
-    }
-
-    emitAgentList(io);
-    console.log("Current customers:", customers);
-
-    socket.emit("transfer-success", { message: `Customer successfully transferred to ${targetAgent.username}` });
-
-  } catch (err) {
-    console.error("Error in transfer-customer:", err);
-    socket.emit("transfer-failed", { message: "Internal server error." });
-  }
-});
-
-
-
-    // --- GET FREE AGENTS LIST ---
-socket.on("request-free-agents", async () => {
-  try {
-    if (socket.role !== "agent") return;
-
-    // Get free agents from in-memory list, excluding self
-    let freeAgents = (await getFreeAgents()).filter(a => a.socketId !== socket.id);
-
-    // Optional: fallback to DB if needed
-    // const dbAgents = await User.find({ role: "agent", status: "free" }).lean();
-    // freeAgents = dbAgents.filter(a => a._id.toString() !== socket.userId);
-
-    // Emit list of free agents
-    socket.emit("free-agents-list", {
-      agents: freeAgents.map(agent => ({
-        id: agent.socketId,
-        username: agent.username
-      }))
-    });
-
-  } catch (err) {
-    console.error("Error in request-free-agents:", err);
-    socket.emit("free-agents-list", { agents: [] });
-  }
-});
-
-
-    
-
-    // --- ADMIN TRANSFER (OVERRIDE) ---
-socket.on("admin-transfer-customer", async ({ customerUsername, toAgentId }) => {
-  try {
-    if (socket.role !== "agent") return;
-
-    const targetAgent = await getAgentById(toAgentId);
-    if (!targetAgent || targetAgent.status !== "free") {
-      return socket.emit("transfer-failed", {
-        message: "Target agent not available for transfer."
-      });
-    }
-
-    const customerSocket = findCustomerSocketByUsername(io, customerUsername);
-    if (!customerSocket || !customers[customerSocket.id]) {
-      return socket.emit("transfer-failed", {
-        message: "Customer not found or not connected."
-      });
-    }
-
-    const customerId = customerSocket.id;
-    const currentHandlerId = customers[customerId];
-    const currentHandler = getAgentById(agents, currentHandlerId);
-
-    // --- Update chat in DB ---
-    const chat = await Chat.findOne({
-      participants: { $all: [currentHandlerId, customerId] },
-      status: "active"
-    });
-
-    if (chat) {
-      if (!chat.participants.some(p => p.id === targetAgent.socketId)) {
-        chat.participants.push({ id: targetAgent.socketId, username: targetAgent.username, role: "agent" });
-      }
-      chat.messages.push({
-        sender: "system",
-        senderUsername: "System",
-        text: `Customer ${customerSocket.username} has been transferred from ${currentHandler?.username || "Agent"} to ${targetAgent.username}`,
-        time: new Date(),
-        type: "system"
-      });
-      await chat.save();
-    }
-
-    // --- Update in-memory tracking ---
-    customers[customerId] = toAgentId;
-
-    if (currentHandler) {
-      currentHandler.status = "free";
-      currentHandler.currentCustomer = null;
-      io.to(currentHandlerId).emit("customer-disconnected");
-    }
-
-    targetAgent.status = "busy";
-    targetAgent.currentCustomer = customerId;
-
-    // --- Emit messages ---
-    io.to(customerId).emit("chat-message", {
-      sender: "System",
-      text: `You have been transferred to agent ${targetAgent.username}`,
-      time: new Date()
-    });
-
-    if (currentHandler) {
-      io.to(currentHandlerId).emit("chat-message", {
-        sender: "System",
-        text: `Customer ${customerSocket.username} was transferred to ${targetAgent.username}`,
-        time: new Date()
-      });
-    }
-
-    io.to(toAgentId).emit("chat-message", {
-      sender: "System",
-      text: `You received customer ${customerSocket.username}`,
-      time: new Date()
-    });
-
-    io.to(toAgentId).emit("customer-connected", {
-      customerId,
-      username: customerSocket.username
-    });
-
-    emitAgentList(io);
-    console.log("Current customers:", customers);
-
-    socket.emit("transfer-success", {
-      message: `Customer ${customerUsername} transferred to ${targetAgent.username}`
-    });
-
-  } catch (err) {
-    console.error("Error in admin-transfer-customer:", err);
-    socket.emit("transfer-failed", { message: "Something went wrong." });
-  }
-});
-
-
-
-    // --- AGENT MESSAGE ---
-socket.on("agent-message", async (msg) => {
-  try {
-    // Find the customer this agent is handling
+// Add this to your socket handler file
+socket.on("request-connection-status", () => {
+  if (socket.role === "agent") {
     const customerId = Object.keys(customers).find(
       (id) => customers[id] === socket.id
     );
-
-    if (!customerId) {
-      return socket.emit("chat-message", {
-        sender: "System",
-        text: "You are not connected to any customer.",
-        time: new Date()
-      });
+    if (customerId) {
+      const customerSocket = io.sockets.sockets.get(customerId);
+      if (customerSocket) {
+        socket.emit("customer-connected", {
+          customerId: customerId,
+          username: customerSocket.username
+        });
+      }
     }
-
-    // --- Send message in real-time to customer ---
-    sendMessage(io, socket, customerId, msg);
-
-    // --- Save message in DB ---
-    let chat = await findOrCreateChat(customerId, socket.id);
-
-    chat.messages.push({
-      sender: socket.id,
-      senderUsername: socket.username,
-      text: msg,
-      type: "text",
-      time: new Date(),
-      role: socket.role
-    });
-
-    await chat.save();
-
-    // --- Optional: in-memory update if needed ---
-    addMessageToChat(socket.id, customerId, {
-      sender: socket.id,
-      senderUsername: socket.username,
-      text: msg,
-      time: new Date(),
-      type: "text",
-      role: socket.role
-    });
-
-  } catch (err) {
-    console.error("Error in agent-message:", err);
-    socket.emit("chat-message", {
-      sender: "System",
-      text: "Message could not be sent.",
-      time: new Date()
-    });
+  } else if (socket.role === "customer") {
+    const agentId = customers[socket.id];
+    if (agentId) {
+      const agent = getAgentById(agents, agentId);
+      if (agent) {
+        socket.emit("agent-connected", {
+          agentId: agentId,
+          username: agent.username
+        });
+      }
+    }
   }
 });
 
+    // --- AGENT TRANSFER REQUEST ---
+    socket.on("transfer-customer", ({ customerId, toAgentId }) => {
+      if (socket.role !== "agent") return;
 
+      const currentAgent = getAgentById(agents, socket.id);
+      const targetAgent = getAgentById(agents, toAgentId);
+      
+      if (!currentAgent || !targetAgent || targetAgent.status !== "free") {
+        socket.emit("transfer-failed", {
+          message: "Transfer failed. Agent is not available."
+        });
+        return;
+      }
+
+      if (!customers[customerId]) {
+        socket.emit("transfer-failed", {
+          message: "Customer not found or not connected to any agent."
+        });
+        return;
+      }
+
+      if (customers[customerId] !== socket.id) {
+        socket.emit("transfer-failed", {
+          message: "You are not handling this customer."
+        });
+        return;
+      }
+
+      // Update chat with transfer information
+      // Add system message for transfer
+      const customerSocket = io.sockets.sockets.get(customerId);
+addSystemMessage(
+
+  socket.id,
+  customerId,
+  `Customer ${customerSocket.username} has been transferred from ${currentAgent.username} to ${targetAgent.username}`
+);
+
+// Add new agent to chat participants
+const chat = findChatByParticipants(socket.id, customerId);
+if (chat) {
+  chat.participants.push({
+    id: targetAgent.socketId,
+    username: targetAgent.username,
+    role: "agent"
+  });
+}
+
+
+      customers[customerId] = toAgentId;
+      currentAgent.status = "free";
+      currentAgent.currentCustomer = null;
+      targetAgent.status = "busy";
+      targetAgent.currentCustomer = customerId;
+
+      // Notify old agent to remove customer from sidebar/header
+io.to(currentAgent.socketId).emit("customer-disconnected", {
+  customerId: customerId
+});
+
+
+      io.to(customerId).emit("chat-message", {
+        sender: "System",
+        text: `You have been transferred to agent ${targetAgent.username}`,
+        time: new Date().toISOString(),
+      });
+
+      io.to(toAgentId).emit("chat-message", {
+        sender: "System",
+        text: `You received a transferred customer from ${currentAgent.username}`,
+        time: new Date().toISOString(),
+      });
+
+      
+      if (customerSocket) {
+        io.to(toAgentId).emit("customer-connected", {
+          customerId: customerId,
+          username: customerSocket.username
+        });
+      }
+
+      emitAgentList(io);
+      console.log("Current customers:", customers);
+
+      socket.emit("transfer-success", {
+        message: `Customer successfully transferred to ${targetAgent.username}`
+      });
+    });
+
+    // --- GET FREE AGENTS LIST ---
+    socket.on("request-free-agents", () => {
+      if (socket.role !== "agent") return;
+    
+      const freeAgents = getFreeAgents(agents).filter(a => a.socketId !== socket.id);
+      socket.emit("free-agents-list", {
+        agents: freeAgents.map(agent => ({
+          id: agent.socketId,
+          username: agent.username
+        }))
+      });
+    });
+    
+
+    // --- ADMIN TRANSFER (OVERRIDE) ---
+    socket.on("admin-transfer-customer", ({ customerUsername, toAgentId }) => {
+      if (socket.role !== "agent") return;
+      
+      const targetAgent = getAgentById(agents, toAgentId);
+      if (!targetAgent || targetAgent.status !== "free") {
+        socket.emit("transfer-failed", {
+          message: "Target agent not available for transfer."
+        });
+        return;
+      }
+      
+      const customerSocket = findCustomerSocketByUsername(io, customerUsername);
+      if (!customerSocket || !customers[customerSocket.id]) {
+        socket.emit("transfer-failed", {
+          message: "Customer not found or not connected."
+        });
+        return;
+      }
+      
+      const customerId = customerSocket.id;
+      const currentHandlerId = customers[customerId];
+      const currentHandler = getAgentById(agents, currentHandlerId);
+      
+      // Update chat with transfer information
+      // Add system message for admin transfer
+addSystemMessage(
+  currentHandlerId,
+  customerId,
+  `Customer ${customerSocket.username} has been transferred from ${currentHandler.username} to ${targetAgent.username}`
+);
+
+// Add new agent to chat participants
+const chat = findChatByParticipants(currentHandlerId, customerId);
+if (chat) {
+  chat.participants.push({
+    id: targetAgent.socketId,
+    username: targetAgent.username,
+    role: "agent"
+  });
+}
+
+      
+      customers[customerId] = toAgentId;
+      
+      if (currentHandler) {
+        currentHandler.status = "free";
+        currentHandler.currentCustomer = null;
+        io.to(currentHandlerId).emit("customer-disconnected");
+      }
+      
+      targetAgent.status = "busy";
+      targetAgent.currentCustomer = customerId;
+      
+      io.to(customerId).emit("chat-message", {
+        sender: "System",
+        text: `You have been transferred to agent ${targetAgent.username}`,
+        time: new Date().toISOString(),
+      });
+      
+      if (currentHandler) {
+        io.to(currentHandlerId).emit("chat-message", {
+          sender: "System",
+          text: `Customer ${customerSocket.username} was transferred to ${targetAgent.username}`,
+          time: new Date().toISOString(),
+        });
+      }
+      
+      io.to(toAgentId).emit("chat-message", {
+        sender: "System",
+        text: `You received customer ${customerSocket.username}`,
+        time: new Date().toISOString(),
+      });
+      
+      io.to(toAgentId).emit("customer-connected", {
+        customerId: customerId,
+        username: customerSocket.username
+      });
+      
+      emitAgentList(io);
+      console.log("Current customers:", customers);
+
+      socket.emit("transfer-success", {
+        message: `Customer ${customerUsername} transferred to ${targetAgent.username}`
+      });
+    });
+
+    // --- AGENT MESSAGE ---
+    socket.on("agent-message", (msg) => {
+      const customerId = Object.keys(customers).find(
+        (id) => customers[id] === socket.id
+      );
+      if (customerId) {
+        sendMessage(io, socket, customerId, msg);
+        addMessageToChat(socket.id, customerId, {
+          sender: socket.id,
+          senderUsername: socket.username,
+          text: msg,
+          time: new Date().toISOString(),
+          type: "text"
+        });
+      } else {
+        socket.emit("chat-message", {
+          sender: "System",
+          text: "You are not connected to any customer.",
+          time: new Date().toISOString(),
+        });
+      }
+    });
 
     // --- FILE MESSAGE ---
-socket.on("send-file", async (data) => {
-  try {
-    let targetId;
-    let targetRole;
-
-    // Determine target based on sender role
-    if (socket.role === "customer") {
-      targetId = customers[socket.id];
-      targetRole = "agent";
-    } else if (socket.role === "agent") {
-      targetId = Object.keys(customers).find(id => customers[id] === socket.id);
-      targetRole = "customer";
-    }
-
-    if (!targetId) {
-      return socket.emit("chat-message", {
-        sender: "system",
-        text: "No active chat to send file.",
-        timestamp: new Date()
-      });
-    }
-
-    // --- Find or create chat in DB ---
-    let chat = await Chat.findOne({
-      "participants.id": { $all: [socket.id, targetId] },
-      status: "active"
+    socket.on("send-file", (data) => {
+      if (socket.role === "customer") {
+        const agentId = customers[socket.id];
+        if (agentId) {
+          sendFile(io, socket, agentId, data);
+          addMessageToChat(socket.id, agentId, {
+            sender: socket.id,
+            senderUsername: socket.username,
+            fileUrl: data.fileUrl,
+            originalName: data.originalName,
+            mimeType: data.mimeType,
+            fileSize: data.fileSize,
+            time: new Date().toISOString(),
+            type: "file"
+          });
+        }
+      } else if (socket.role === "agent") {
+        const customerId = Object.keys(customers).find(
+          (id) => customers[id] === socket.id
+        );
+        if (customerId) {
+          sendFile(io, socket, customerId, data);
+          addMessageToChat(socket.id, customerId, {
+            sender: socket.id,
+            senderUsername: socket.username,
+            fileUrl: data.fileUrl,
+            originalName: data.originalName,
+            mimeType: data.mimeType,
+            fileSize: data.fileSize,
+            time: new Date().toISOString(),
+            type: "file"
+          });
+        }
+      }
     });
-
-    if (!chat) {
-      chat = new Chat({
-        participants: [
-          { id: socket.id, username: socket.username, role: socket.role },
-          { id: targetId, username: io.sockets.sockets.get(targetId)?.username || targetRole, role: targetRole }
-        ],
-        messages: [],
-        status: "active",
-        startTime: new Date()
-      });
-    }
-
-    // --- Add file message to chat ---
-    const fileMessage = {
-      sender: socket.role,
-      senderUsername: socket.username,
-      type: "file",
-      fileUrl: data.fileUrl,
-      originalName: data.originalName,
-      mimeType: data.mimeType,
-      fileSize: data.fileSize,
-      timestamp: new Date()
-    };
-
-    chat.messages.push(fileMessage);
-    await chat.save();
-
-    // --- Emit file message to the other user ---
-    io.to(targetId).emit("chat-message", fileMessage);
-    socket.emit("chat-message", fileMessage); // Optional: send to self as confirmation
-
-  } catch (err) {
-    console.error("Error in send-file:", err);
-    socket.emit("chat-message", {
-      sender: "system",
-      text: "File could not be sent.",
-      timestamp: new Date()
-    });
-  }
-});
-
-
 
     // --- TYPING INDICATORS ---
-socket.on("typing-start", async () => {
-  try {
-    let targetId;
-
-    // Determine the chat partner
-    if (socket.role === "customer") {
-      targetId = customers[socket.id];
-    } else if (socket.role === "agent") {
-      targetId = Object.keys(customers).find(id => customers[id] === socket.id);
-    }
-
-    if (!targetId) return;
-
-    // Emit typing event to the other user
-    io.to(targetId).emit("user-typing", {
-      userId: socket.id,
-      username: socket.username
+    socket.on("typing-start", () => {
+      if (socket.role === "customer" && customers[socket.id]) {
+        io.to(customers[socket.id]).emit("user-typing", {
+          userId: socket.id,
+          username: socket.username
+        });
+      } else if (socket.role === "agent") {
+        const customerId = Object.keys(customers).find(
+          (id) => customers[id] === socket.id
+        );
+        if (customerId) {
+          io.to(customerId).emit("user-typing", {
+            userId: socket.id,
+            username: socket.username
+          });
+        }
+      }
     });
 
-    // Optional DB log if you want persistent typing status
-    // const chat = await Chat.findOne({
-    //   "participants.id": { $all: [socket.id, targetId] },
-    //   status: "active"
-    // });
-    // if (chat) {
-    //   chat.typingStatus = chat.typingStatus || {};
-    //   chat.typingStatus[socket.id] = true;
-    //   await chat.save();
-    // }
-
-  } catch (err) {
-    console.error("Error in typing-start:", err);
-  }
-});
-
-
-
-socket.on("typing-stop", async () => {
-  try {
-    let targetId;
-
-    // Determine the chat partner
-    if (socket.role === "customer") {
-      targetId = customers[socket.id];
-    } else if (socket.role === "agent") {
-      targetId = Object.keys(customers).find(id => customers[id] === socket.id);
-    }
-
-    if (!targetId) return;
-
-    // Emit stop typing event to the other user
-    io.to(targetId).emit("user-stop-typing", {
-      userId: socket.id
+    socket.on("typing-stop", () => {
+      if (socket.role === "customer" && customers[socket.id]) {
+        io.to(customers[socket.id]).emit("user-stop-typing", {
+          userId: socket.id
+        });
+      } else if (socket.role === "agent") {
+        const customerId = Object.keys(customers).find(
+          (id) => customers[id] === socket.id
+        );
+        if (customerId) {
+          io.to(customerId).emit("user-stop-typing", {
+            userId: socket.id
+          });
+        }
+      }
     });
-
-    // Optional DB log if you want persistent typing status
-    // const chat = await Chat.findOne({
-    //   "participants.id": { $all: [socket.id, targetId] },
-    //   status: "active"
-    // });
-    // if (chat && chat.typingStatus) {
-    //   delete chat.typingStatus[socket.id];
-    //   await chat.save();
-    // }
-
-  } catch (err) {
-    console.error("Error in typing-stop:", err);
-  }
-});
-
-
 
     // --- END CHAT ---
-socket.on("end-chat", async () => {
-  try {
-    let agentId, customerId;
+    socket.on("end-chat", () => {
+      if (customers[socket.id]) {
+        const agentId = customers[socket.id];
+        releaseAgent(agents, agentId);
+        const agent = getAgentById(agents, agentId);
+        if (agent) {
+          agent.currentCustomer = null;
+          agent.status = "free";
+        }
 
-    if (customers[socket.id]) {
-      // Customer is ending the chat
-      agentId = customers[socket.id];
-      customerId = socket.id;
-    } else {
-      // Agent is ending the chat
-      customerId = Object.keys(customers).find(id => customers[id] === socket.id);
-      agentId = socket.id;
-    }
+        // Update chat status to ended
+        const chat = findChatByParticipants(agentId, socket.id);
+        if (chat) {
+          chat.status = "ended";
+          chat.endTime = new Date().toISOString()
+          addMessageToChat(agentId, socket.id, {
+            sender: "system",
+            senderUsername: "System",
+            text: "Customer ended the chat",
+            time: new Date().toISOString(),
+            type: "system"
+          });
+        }
 
-    if (!customerId || !agentId) return;
+        io.to(agentId).emit("chat-message", {
+          sender: "System",
+          text: "Customer ended the chat.",
+          time: new Date().toISOString(),
+        });
+        
+        io.to(agentId).emit("customer-disconnected");
+        
+        delete customers[socket.id];
+        emitAgentList(io);
+        console.log("Current customers:", customers);
 
-    // Release agent in memory
-    releaseAgent(agents, agentId);
-    const agent = getAgentById(agents, agentId);
-    if (agent) {
-      agent.currentCustomer = null;
-      agent.status = "free";
-    }
+      } else {
+        const customerId = Object.keys(customers).find(
+          (id) => customers[id] === socket.id
+        );
+        if (customerId) {
+          // Update chat status to ended
+          const chat = findChatByParticipants(socket.id, customerId);
+          if (chat) {
+            chat.status = "ended";
+            chat.endTime = new Date().toISOString();
+            addMessageToChat(socket.id, customerId, {
+              sender: "system",
+              senderUsername: "System",
+              text: "Agent ended the chat",
+              time: new Date().toISOString(),
+              type: "system"
+            });
+          }
+          
+          io.to(customerId).emit("chat-message", {
+            sender: "System",
+            text: "Agent ended the chat.",
+            time: new Date().toISOString(),
+          });
+          delete customers[customerId];
+        }
+        releaseAgent(agents, socket.id);
+        const agent = getAgentById(agents, socket.id);
+        if (agent) {
+          agent.currentCustomer = null;
+          agent.status = "free";
+        }
 
-    // --- Update chat in DB ---
-    const chat = await Chat.findOne({
-      "participants.id": { $all: [agentId, customerId] },
-      status: "active"
+        io.to(socket.id).emit("customer-disconnected");
+        emitAgentList(io);
+        console.log("Current customers:", customers);
+      }
+      
+      // Notify all users of updated chat history
+      io.emit("chat-history", { chats: getAllChats() });
     });
-
-    if (chat) {
-      chat.status = "ended";
-      chat.endTime = new Date();
-
-      // Add system message
-      chat.messages.push({
-        sender: "system",
-        senderUsername: "System",
-        text: `${socket.role === "customer" ? "Customer" : "Agent"} ended the chat`,
-        time: new Date(),
-        type: "system"
-      });
-
-      await chat.save();
-    }
-
-    // Notify both users
-    io.to(agentId).emit("chat-message", {
-      sender: "System",
-      text: `${socket.role === "customer" ? "Customer" : "Agent"} ended the chat.`,
-      time: new Date().toISOString()
-    });
-
-    io.to(customerId).emit("chat-message", {
-      sender: "System",
-      text: `${socket.role === "customer" ? "Customer" : "Agent"} ended the chat.`,
-      time: new Date().toISOString()
-    });
-
-    io.to(agentId).emit("customer-disconnected");
-    io.to(customerId).emit("customer-disconnected");
-
-    // Remove customer from memory
-    delete customers[customerId];
-
-    // Update agent list
-    emitAgentList(io);
-    console.log("Current customers:", customers);
-
-    // Optionally emit updated chat history to all clients
-    const allChats = await Chat.find().sort({ startTime: -1 }).limit(50);
-    io.emit("chat-history", { chats: allChats });
-
-  } catch (err) {
-    console.error("Error in end-chat:", err);
-  }
-});
-
-
 
     // --- DISCONNECT ---
-socket.on("disconnect", async () => {
-  console.log(`❌ Disconnected: ${socket.username || socket.id}`);
+    socket.on("disconnect", () => {
+      console.log(`❌ Disconnected: ${socket.username || socket.id}`);
 
-  try {
-    // 1. Find the user in DB
-    const user = await User.findOne({ socketId: socket.id });
-    if (!user) return;
-
-    // --- Agent disconnect ---
-    if (user.role === "agent") {
-      // Find active chat(s) where this agent is participating
-      const chats = await Chat.find({ "participants.id": socket.id, status: "active" });
-
-      for (const chat of chats) {
-        chat.status = "ended";
-        chat.endTime = new Date();
-        chat.messages.push({
-          sender: "system",
-          senderUsername: "System",
-          text: "Agent disconnected",
-          time: new Date(),
-          type: "system"
-        });
-        await chat.save();
-
-        // Notify the customer
-        const customerParticipant = chat.participants.find(p => p.role === "customer");
-        if (customerParticipant) {
-          io.to(customerParticipant.id).emit("chat-message", {
+      const agentIndex = agents.findIndex((a) => a.socketId === socket.id);
+      if (agentIndex !== -1) {
+        const agent = agents[agentIndex];
+        const customerId = Object.keys(customers).find(
+          (id) => customers[id] === socket.id
+        );
+        if (customerId) {
+          // Update chat status to ended
+          const chat = findChatByParticipants(socket.id, customerId);
+          if (chat) {
+            chat.status = "ended";
+            chat.endTime = new Date().toISOString();
+            addMessageToChat(socket.id, customerId, {
+              sender: "system",
+              senderUsername: "System",
+              text: "Agent disconnected",
+              time: new Date().toISOString(),
+              type: "system"
+            });
+          }
+          
+          io.to(customerId).emit("chat-message", {
             sender: "System",
             text: "Agent disconnected. Please wait for another agent.",
-            time: new Date().toISOString()
+            time: new Date().toISOString(),
+          });
+          delete customers[customerId];
+        }
+        
+        agents.splice(agentIndex, 1);
+        emitAgentList(io);
+        console.log("Current customers:", customers);
+        
+      } else if (customers[socket.id]) {
+        const agentId = customers[socket.id];
+        releaseAgent(agents, agentId);
+        const agent = getAgentById(agents, agentId);
+        if (agent) {
+          agent.currentCustomer = null;
+          agent.status = "free";
+        }
+      
+        const chat = findChatByParticipants(agentId, socket.id);
+        if (chat) {
+          chat.status = "ended";
+          chat.endTime = new Date().toISOString();
+          addMessageToChat(agentId, socket.id, {
+            sender: "system",
+            senderUsername: "System",
+            text: "Customer disconnected",
+            time: new Date().toISOString(),
+            type: "system"
           });
         }
-      }
-
-      // Mark agent as available again
-      user.status = "free";
-      user.currentCustomer = null;
-      await user.save();
-    }
-
-    // --- Customer disconnect ---
-    else if (user.role === "customer") {
-      const chats = await Chat.find({ "participants.id": socket.id, status: "active" });
-
-      for (const chat of chats) {
-        chat.status = "ended";
-        chat.endTime = new Date();
-        chat.messages.push({
-          sender: "system",
-          senderUsername: "System",
-          text: "Customer disconnected",
-          time: new Date(),
-          type: "system"
+      
+        io.to(agentId).emit("chat-message", {
+          sender: "System",
+          text: "Customer disconnected.",
+          time: new Date().toISOString(),
         });
-        await chat.save();
-
-        // Notify the agent
-        const agentParticipant = chat.participants.find(p => p.role === "agent");
-        if (agentParticipant) {
-          io.to(agentParticipant.id).emit("chat-message", {
-            sender: "System",
-            text: "Customer disconnected.",
-            time: new Date().toISOString()
-          });
-          io.to(agentParticipant.id).emit("customer-disconnected");
-
-          // Update agent status
-          const agentUser = await User.findOne({ socketId: agentParticipant.id });
-          if (agentUser) {
-            agentUser.status = "free";
-            agentUser.currentCustomer = null;
-            await agentUser.save();
-          }
-        }
+      
+        io.to(agentId).emit("customer-disconnected");
+      
+        delete customers[socket.id];
+        emitAgentList(io);
       }
-    }
-
-    // 2. Remove customer from in-memory tracking
-    delete customers[socket.id];
-
-    // 3. Refresh agent list for all clients
-    await emitAgentList(io);
-
-    console.log("✅ Disconnect handled for user:", user.username || socket.id);
-  } catch (err) {
-    console.error("❌ Error handling disconnect:", err);
-  }
-});
-
-
-
+      
+      
+      // Notify all users of updated chat history
+      io.emit("chat-history", { chats: getAllChats() });
+    });
 
     socket.on("ping", () => {
       socket.emit("pong");
     });
   });
 
+  // --- Helper Functions ---
+  function sendMessage(io, socket, targetId, text) {
+    const payload = { 
+      sender: socket.username, 
+      text, 
+      time: new Date().toISOString(),
+      type: "text",
+      role:socket.role
+    };
+    io.to(targetId).emit("chat-message", payload);
+    socket.emit("chat-message", payload);
+  }
 
-  // Helper function to find or create chat between customer & agent
-async function findOrCreateChat(customerId, agentId) {
-  // Try to find an active chat between customer and agent
-  let chat = await Chat.findOne({
-    "participants.id": { $all: [customerId, agentId] },
-    status: "active"
-  });
+  function sendFile(io, socket, targetId, fileData) {
+    const payload = { 
+      sender: socket.username, 
+      fileUrl: fileData.fileUrl, 
+      originalName: fileData.originalName,
+      mimeType: fileData.mimeType,
+      fileSize: fileData.fileSize,
+      time: new Date().toISOString(),
+      type: "file",
+      role:socket.role
+    };
+    io.to(targetId).emit("chat-message", payload);
+    socket.emit("chat-message", payload);
+  }
 
-  if (!chat) {
-    // Get usernames from sockets if they exist
+  function getAgentList() {
+    return agents.map(a => ({
+      id: a.socketId,
+      username: a.username,
+      status: a.status,
+      currentCustomer: a.currentCustomer
+    }));
+  }
+
+  function emitAgentList(io) {
+    const list = getAgentList();
+    console.log("📤 Emitting agent-list-update:", list);
+    io.emit("agent-list-update", { agents: list });
+  }
+  function connectCustomerToAgent(customerSocket, agent) {
+    const customerId = customerSocket.id;
+    const agentId = agent.socketId;
+  
+    // 1. Assign mappings
+    customers[customerId] = agentId;
+    agent.currentCustomer = customerId;
+    agent.status = "busy";
+  
+    // 2. Create chat if not exists
+    let chat = findChatByParticipants(customerId, agentId);
+    if (!chat) {
+      const chatId = createChat(customerId, agentId);
+      chat = findChatByParticipants(customerId, agentId);
+    }
+  
+    // 3. Add system message for connection
+    addMessageToChat(customerId, agentId, {
+      sender: "system",
+      senderUsername: "System",
+      text: `Agent ${agent.username} is now connected to you.`,
+      time: new Date().toISOString(),
+      type: "system"
+    });
+  
+    // 4. Notify customer
+    customerSocket.emit("agent-connected", {
+      agentId,
+      username: agent.username
+    });
+  
+    // 5. Notify agent
+    io.to(agentId).emit("customer-connected", {
+      customerId,
+      username: customerSocket.username
+    });
+  
+    // 6. Send latest chat history to both
+    customerSocket.emit("chat-history", { chats: getChatHistoryForUser(customerId, "customer") });
+    io.to(agentId).emit("chat-history", { chats: getChatHistoryForUser(agentId, "agent") });
+  
+    // 7. Update agent list for everyone
+    emitAgentList(io);
+  }
+  
+  
+  function createChat(customerId, agentId) {
     const customerSocket = io.sockets.sockets.get(customerId);
     const agentSocket = io.sockets.sockets.get(agentId);
-
-    chat = new Chat({
+    
+    if (!customerSocket || !agentSocket) return null;
+    
+    const chatId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    const chat = {
+      id: chatId,
       participants: [
         {
           id: customerId,
-          username: customerSocket?.username || "Customer",
+          username: customerSocket.username,
           role: "customer"
         },
         {
           id: agentId,
-          username: agentSocket?.username || "Agent",
+          username: agentSocket.username,
           role: "agent"
         }
       ],
       messages: [],
-      startTime: new Date(),
+      startTime: new Date().toISOString(),
       status: "active"
-    });
-
-    await chat.save();
-  }
-
-  return chat;
-}
-
-  // --- Helper Functions ---
-async function sendMessage(io, socket, targetId, msg) {
-  try {
-    // Ensure msg is a string, not an object
-    const messageText = typeof msg === 'string' ? msg : msg.text || '';
-
-    // 1️⃣ Find or create the chat between sender and target
-    const chat = await findOrCreateChat(socket.id, targetId);
-    if (!chat) {
-      throw new Error("Could not create or find chat");
-    }
-
-    // 2️⃣ Create message object with correct enum values
-    const message = {
-      sender: socket.role, // This should be "customer" or "agent", not socket.id
-      senderUsername: socket.username,
-      text: messageText,
-      type: "text",
-      time: new Date()
     };
-
-    // 3️⃣ Save message inside Chat document
-    chat.messages.push(message);
-    await chat.save();
-
-    // 4️⃣ Prepare payload for frontend
-    const payload = {
-      sender: socket.username,
-      text: messageText,
-      time: message.time.toISOString(),
-      type: "text",
-      role: socket.role
-    };
-
-    // 5️⃣ Emit message to recipient and sender
-    io.to(targetId).emit("chat-message", payload);
-    socket.emit("chat-message", payload);
-
-  } catch (err) {
-    console.error("Error in sendMessage:", err);
-    socket.emit("chat-message", {
-      sender: "System",
-      text: "Message could not be sent.",
-      time: new Date().toISOString(),
-      type: "system"
-    });
+    
+    chats.push(chat);
+    return chatId;
   }
-}
-
-
-
-async function sendFile(io, socket, targetId, fileData) {
-  // 1️⃣ Find or create the chat between sender and target
-  const chat = await findOrCreateChat(socket.id, targetId);
-
-  // 2️⃣ Create message document in DB
-  const message = await Message.create({
-    chatId: chat._id,
-    senderId: socket.id,
-    senderUsername: socket.username,
-    fileUrl: fileData.fileUrl,
-    originalName: fileData.originalName,
-    mimeType: fileData.mimeType,
-    fileSize: fileData.fileSize,
-    type: "file",
-    role: socket.role,
-    time: new Date(),
-  });
-
-  // 3️⃣ Prepare payload for frontend
-  const payload = {
-    sender: socket.username,
-    fileUrl: fileData.fileUrl,
-    originalName: fileData.originalName,
-    mimeType: fileData.mimeType,
-    fileSize: fileData.fileSize,
-    time: message.time.toISOString(),
-    type: "file",
-    role: socket.role,
-  };
-
-  // 4️⃣ Emit to recipient and sender
-  io.to(targetId).emit("chat-message", payload);
-  socket.emit("chat-message", payload);
-}
-
-
-async function getAgentList() {
-  try {
-    // Fetch all agents from the User collection
-    const agents = await User.find(
-      { role: "agent" },
-      "socketId username status currentCustomer"
-    ).lean();
-
-    // Map to the structure used by frontend with fallbacks
-    return agents.map((a) => ({
-      id: a.socketId,
-      username: a.username || "Unknown Agent",
-      status: a.status || "free",
-      currentCustomer: a.currentCustomer || null,
-    }));
-  } catch (err) {
-    console.error("Error fetching agent list:", err);
-    return [];
-  }
-}
-
-
-
-
-async function emitAgentList(io) {
-  try {
-    const list = await getAgentList(); // fetch from DB
-    console.log("📤 Emitting agent-list-update:", list);
-    io.emit("agent-list-update", { agents: list });
-  } catch (err) {
-    console.error("❌ Error emitting agent list:", err);
-  }
-}
-
-async function connectCustomerToAgent(customerSocket, agent) {
-  try {
-    const customerSocketId = customerSocket.id;
-    const agentSocketId = agent.socketId;
-
-    // Update in-memory tracking
-    customers[customerSocketId] = agentSocketId;
-
-    // Update customer in DB
-    await User.findOneAndUpdate(
-      { socketId: customerSocketId, role: "customer" },
-      { 
-        username: customerSocket.username,
-        currentCustomer: agentSocketId 
-      },
-      { upsert: true, new: true }
+  
+  function findChatByParticipants(userA, userB) {
+    return chats.find(chat => 
+      chat.status === "active" &&
+      chat.participants.some(p => p.id === userA) &&
+      chat.participants.some(p => p.id === userB)
     );
-
-    // Update agent in DB
-    await User.findOneAndUpdate(
-      { socketId: agentSocketId, role: "agent" },
-      { 
-        username: agent.username,
-        status: "busy",
-        currentCustomer: customerSocketId 
-      },
-      { upsert: true, new: true }
+  }
+  
+  
+  function addMessageToChat(userA, userB, message) {
+    const chat = chats.find(
+      (c) =>
+        c.status === "active" &&
+        c.participants.some(p => p.id === userA) &&
+        c.participants.some(p => p.id === userB)
     );
-
-    // Find or create chat
-    let chat = await Chat.findOne({
-      "participants.id": { $all: [customerSocketId, agentSocketId] },
-      status: "active"
-    });
-
-    if (!chat) {
-      chat = new Chat({
-        participants: [
-          {
-            id: customerSocketId,
-            username: customerSocket.username,
-            role: "customer"
-          },
-          {
-            id: agentSocketId,
-            username: agent.username,
-            role: "agent"
-          }
-        ],
-        messages: [],
-        startTime: new Date(),
-        status: "active"
-      });
-      await chat.save();
-    }
-
-    // Add system message - FIXED: use parameter names instead of undefined 'socket'
+    if (chat) chat.messages.push(message);
+  }
+  
+  function addSystemMessage(userA, userB, text) {
     const systemMessage = {
       sender: "system",
       senderUsername: "System",
-      text: `Connected to ${agent.username}`,
-      time: new Date(),
+      text,
+      time: new Date().toISOString(),
       type: "system"
     };
-    
-    chat.messages.push(systemMessage);
-    await chat.save();
-
-    // Notify both users
-    customerSocket.emit("agent-connected", {
-      agentId: agentSocketId,
-      username: agent.username
-    });
-
-    io.to(agentSocketId).emit("customer-connected", {
-      customerId: customerSocketId,
-      username: customerSocket.username
-    });
-
-    // Send chat history
-    const customerChats = await getChatHistoryForUser(customerSocketId, "customer");
-    const agentChats = await getChatHistoryForUser(agentSocketId, "agent");
-
-    customerSocket.emit("chat-history", { chats: customerChats });
-    io.to(agentSocketId).emit("chat-history", { chats: agentChats });
-
-    // Update agent list
-    await emitAgentList(io);
-
-  } catch (err) {
-    console.error("❌ Error in connectCustomerToAgent:", err);
-  }
-}
-
-
   
+    addMessageToChat(userA, userB, systemMessage);
   
-async function createChat(customerId, agentId) {
-  try {
-    const customerSocket = io.sockets.sockets.get(customerId);
-    const agentSocket = io.sockets.sockets.get(agentId);
-
-    if (!customerSocket || !agentSocket) return null;
-
-    const chatDoc = new Chat({
-      participants: [
-        { id: customerId, username: customerSocket.username, role: "customer" },
-        { id: agentId, username: agentSocket.username, role: "agent" }
-      ],
-      messages: [],
-      startTime: new Date(),
-      status: "active"
-    });
-
-    const savedChat = await chatDoc.save();
-    return savedChat._id.toString(); // return the DB-generated chat ID
-  } catch (err) {
-    console.error("❌ Error in createChat:", err);
-    return null;
-  }
-}
-
-  
-async function findChatByParticipants(customerId, agentId) {
-  const chat = await Chat.findOne({
-    status: "active",
-    customer: customerId,
-    agent: agentId
-  });
-  return chat;
-}
-
-async function findOrCreateChatForCustomer(customerId) {
-  try {
-    // Find active chat for this customer
-    let chat = await Chat.findOne({
-      "participants.id": customerId,
-      status: "active"
-    });
-
-    if (!chat) {
-      // Create a new chat with just the customer
-      const customerSocket = io.sockets.sockets.get(customerId);
-      chat = new Chat({
-        participants: [
-          {
-            id: customerId,
-            username: customerSocket?.username || "Customer",
-            role: "customer"
-          }
-        ],
-        messages: [],
-        startTime: new Date(),
-        status: "active"
-      });
-      await chat.save();
-    }
-
-    return chat;
-  } catch (err) {
-    console.error("❌ Error in findOrCreateChatForCustomer:", err);
-    return null;
-  }
-}
-  
-async function addMessageToChat(userA, userB, message) {
-  try {
-    const chat = await Chat.findOne({
-      status: "active",
-      "participants.id": { $all: [userA, userB] }
-    });
-
-    if (chat) {
-      chat.messages.push(message);
-      await chat.save();
-    }
-  } catch (err) {
-    console.error("❌ Error in addMessageToChat:", err);
-  }
-}
-
-  
-async function addSystemMessage(userA, userB, text) {
-  const systemMessage = {
-    sender: "system",
-    senderUsername: "System",
-    text,
-    time: new Date().toISOString(),
-    type: "system"
-  };
-
-  // 1️⃣ Add message to DB
-  await addMessageToChat(userA, userB, systemMessage);
-
-  // 2️⃣ Broadcast this system message to connected participants
-  try {
-    const chat = await Chat.findOne({
-      status: "active",
-      "participants.id": { $all: [userA, userB] }
-    });
-
+    // Broadcast this system message to both participants
+    const chat = findChatByParticipants(userA, userB);
     if (chat) {
       chat.participants.forEach((p) => {
         io.to(p.id).emit("chat-message", systemMessage);
       });
     }
-  } catch (err) {
-    console.error("❌ Error in addSystemMessage:", err);
   }
-}
-
   
   
-async function getChatHistoryForUser(userId, userRole) {
-  if (userRole === "admin") {
-    return getAllChats(); // Assuming getAllChats is also converted to DB version
-  }
-
-  try {
-    const chats = await Chat.find({
-      "participants.id": userId
-    })
-    .sort({ startTime: -1 }) // most recent chats first
-    .lean();
-
-    // Only keep last 10 messages per chat
-    const chatHistories = chats.map(chat => ({
-      ...chat,
-      messages: chat.messages.slice(-10)
-    }));
-
-    return chatHistories;
-  } catch (err) {
-    console.error("❌ Error in getChatHistoryForUser:", err);
-    return [];
-  }
-}
-
+  function getChatHistoryForUser(userId, userRole) {
+    if (userRole === "admin") return getAllChats();
   
- async function getAllChats() {
-  try {
-    const chats = await Chat.find({})
-      .sort({ startTime: -1 }) // optional: most recent chats first
-      .lean();
-
-    // Limit messages to last 10 per chat
+    return chats
+      .filter(chat => chat.participants.some(p => p.id === userId))
+      .map(chat => ({
+        ...chat,
+        messages: chat.messages.slice(-10)
+      }));
+  }
+  
+  
+  function getAllChats() {
     return chats.map(chat => ({
       ...chat,
+      // Don't send full message history for performance
       messages: chat.messages.slice(-10)
     }));
-  } catch (err) {
-    console.error("❌ Error in getAllChats:", err);
-    return [];
   }
-}
-
-async function isUserInChat(userId, userRole, chatId) {
-  if (userRole === "admin") return true;
-
-  try {
-    const chat = await Chat.findById(chatId).lean();
-    if (!chat) return false;
-
+  
+  function isUserInChat(userId, userRole, chat) {
+    if (userRole === "admin") return true;
     return chat.participants.some(p => p.id === userId);
-  } catch (err) {
-    console.error("❌ Error in isUserInChat:", err);
-    return false;
   }
-}
 
-
-async function findCustomerSocketByUsername(username) {
-  try {
-    const customer = await User.findOne({ username:username, role: "customer" });
-    if (!customer) return null;
-
-    // Return a simplified object similar to a socket reference
-    return {
-      id: customer._id.toString(),
-      username: customer.username,
-      role: "customer"
-    };
-  } catch (err) {
-    console.error("❌ Error in findCustomerByUsername:", err);
+  function findCustomerSocketByUsername(io, username) {
+    const sockets = io.sockets.sockets;
+    for (let [socketId, socket] of sockets) {
+      if (socket.username === username && socket.role === "customer") {
+        return socket;
+      }
+    }
     return null;
   }
-}
-
 
   function now() {
     return new Date().toLocaleTimeString([], { 
