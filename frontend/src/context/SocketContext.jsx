@@ -11,7 +11,7 @@ export function SocketProvider({ children }) {
   const [assignedAgent, setAssignedAgent] = useState(null);
 
   useEffect(() => {
-    const newSocket = io("http://localhost:9000", {
+    const newSocket = io("https://chatofhelpandsupports.onrender.com", {
       transports: ["websocket"], // faster, avoids polling
     });
 
