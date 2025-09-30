@@ -13,7 +13,7 @@ const server = http.createServer(app);
 // Setup Socket.io
 const io = new Server(server, {
   cors: {
-    origin: "*", // frontend origin
+    origin: "https://chatof-help-and-supports.vercel.app/", // frontend origin
     methods: ["GET", "POST"]
   }
 });
